@@ -1,0 +1,52 @@
+﻿services:
+  daemon-postgres:
+    image: postgres:16-alpine
+    container_name: daemon-postgres
+    environment:
+      POSTGRES_USER: daemon
+      POSTGRES_PASSWORD: daemon
+      POSTGRES_DB: rules_enrichment_daemon
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U daemon -d rules_enrichment_daemon"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - daemon_postgres_data:/var/lib/postgresql/data
+
+  rules-enrichment-daemon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rules-enrichment-daemon
+    command: ["python", "-m", "app.interfaces.cli.main", "run-daemon"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://daemon:daemon@daemon-postgres:5432/rules_enrichment_daemon
+      USE_SQLITE: "false"
+      APP_NAME: rules-enrichment-daemon
+      APP_ENV: local
+      APP_VERSION: 0.1.0
+      LOG_LEVEL: DEBUG
+      LOG_ECS_ENABLED: "true"
+      LOG_TO_STDOUT: "true"
+      LOG_TO_FILE: "false"
+      EXTERNAL_API_BASE_URL: http://host.docker.internal:8000
+      EXTERNAL_API_TIMEOUT_SECONDS: "8"
+      POLL_INTERVAL_SECONDS: "10"
+      POLL_BATCH_SIZE: "25"
+      RULE_CACHE_TTL_SECONDS: "30"
+      MAX_PROCESSING_ATTEMPTS: "3"
+      OUTBOX_PUBLISH_INTERVAL_SECONDS: "5"
+      OUTBOX_SINK_MODE: log
+    depends_on:
+      daemon-postgres:
+        condition: service_healthy
+
+volumes:
+  daemon_postgres_data:
+
+networks:
+  observability:
+    name: observability

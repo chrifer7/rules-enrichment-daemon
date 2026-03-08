@@ -1,0 +1,31 @@
+﻿### Health API
+GET http://localhost:8080/health
+
+### Seed rules via CLI
+# run in terminal: seed-rules
+
+### Simulator pending orders (external API)
+GET http://localhost:8000/api/v1/orders?status=READY_FOR_ENRICHMENT&limit=20
+
+### Submit enrichment payload example
+POST http://localhost:8000/api/v1/orders/ORD-20260307-000123/enrichment
+Content-Type: application/json
+
+{
+  "correlation_id": "9d1d2c9f-9c5f-4f1a-8e3e-111111111111",
+  "source_system": "rules-enrichment-daemon",
+  "enrichment_version": 1,
+  "applied_rules": [
+    {
+      "rule_id": "RULE-DEST-ES-001",
+      "rule_type": "destination",
+      "description": "Destination country is ES"
+    }
+  ],
+  "enriched_fields": {
+    "destination_lane": "ES01",
+    "source_handling_code": "SPECIAL_ORIGIN",
+    "treatment_code": "STANDARD",
+    "allocation_zone": "A1"
+  }
+}
