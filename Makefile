@@ -19,4 +19,5 @@ migrate:
 	alembic upgrade head
 
 test:
+	$env:USE_SQLITE="true"
 	pytest -q
