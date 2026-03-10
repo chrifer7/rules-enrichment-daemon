@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rules-enrichment-daemon-test-d
+  labels:
+    app.kubernetes.io/name: rules-enrichment-daemon
+    app.kubernetes.io/environment: test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rules-enrichment-daemon
+      app.kubernetes.io/environment: test
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rules-enrichment-daemon
+        app.kubernetes.io/environment: test
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: daemon
+          image: rules-enrichment-daemon-test-is:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.interfaces.cli.main", "run-daemon"]
+          envFrom:
+            - configMapRef:
+                name: rules-enrichment-daemon-test-config
+            - secretRef:
+                name: rules-enrichment-daemon-test-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+        - name: health
+          image: rules-enrichment-daemon-test-is:latest
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "app.interfaces.health.api:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports:
+            - name: health
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: rules-enrichment-daemon-test-config
+            - secretRef:
+                name: rules-enrichment-daemon-test-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]

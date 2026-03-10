@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rules-enrichment-daemon-health-dev
+  labels:
+    app.kubernetes.io/name: rules-enrichment-daemon
+    app.kubernetes.io/environment: dev
+spec:
+  selector:
+    app.kubernetes.io/name: rules-enrichment-daemon
+    app.kubernetes.io/environment: dev
+  ports:
+    - name: http-health
+      port: 8080
+      targetPort: health

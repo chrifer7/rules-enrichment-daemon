@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: daemon-postgres-test-d
+  labels:
+    app.kubernetes.io/name: daemon-postgres
+    app.kubernetes.io/environment: test
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: daemon-postgres
+      app.kubernetes.io/environment: test
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: daemon-postgres
+        app.kubernetes.io/environment: test
+    spec:
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: daemon-postgres-test-secret
+          startupProbe:
+            exec:
+              command: ["/bin/sh", "-ec", "pg_isready -h 127.0.0.1 -p 5432 -U \"\" -d \"\""]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            exec:
+              command: ["/bin/sh", "-ec", "pg_isready -h 127.0.0.1 -p 5432 -U \"\" -d \"\""]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            exec:
+              command: ["/bin/sh", "-ec", "pg_isready -h 127.0.0.1 -p 5432 -U \"\" -d \"\""]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1Gi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: daemon-postgres-test-data

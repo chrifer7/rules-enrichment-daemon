@@ -1,0 +1,16 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: rules-enrichment-daemon-health-test
+  labels:
+    app.kubernetes.io/name: rules-enrichment-daemon
+    app.kubernetes.io/environment: test
+spec:
+  to:
+    kind: Service
+    name: rules-enrichment-daemon-health-test
+  port:
+    targetPort: http-health
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
