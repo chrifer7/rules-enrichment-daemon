@@ -38,9 +38,11 @@ Examples:
 Authentication options (optional):
 - `-OcServer` and `-OcToken` for `oc login` inside the script
 - `-OcInsecureSkipTlsVerify` if your corporate cluster requires it
-- `-GitSecretName` to reference an existing OpenShift secret for private Git clone
+- `-BuildSource Binary|Git` (default: `Binary`)
+- `-GitSecretName` only required when `-BuildSource Git`
 
 You can also provide these as environment variables:
 - `OPENSHIFT_SERVER`, `OPENSHIFT_TOKEN`
-- `GIT_SOURCE_SECRET_NAME`
+- `GIT_SOURCE_SECRET_NAME` (only for Git builds)
+- Build quota tuning: `-BuildCpuLimit`, `-BuildMemoryLimit`, `-BuildCpuRequest`, `-BuildMemoryRequest`
 

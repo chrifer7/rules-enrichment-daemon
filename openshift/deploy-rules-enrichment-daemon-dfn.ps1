@@ -22,7 +22,32 @@ param(
   [string]$GitRef = 'main',
 
   [Parameter(Mandatory = $false)]
+  [ValidateSet('Binary', 'Git')]
+  [string]$BuildSource = 'Binary',
+
+  [Parameter(Mandatory = $false)]
   [string]$GitSecretName = '',
+
+  [Parameter(Mandatory = $false)]
+  [string]$BuildCpuLimit = '500m',
+
+  [Parameter(Mandatory = $false)]
+  [string]$BuildMemoryLimit = '512Mi',
+
+  [Parameter(Mandatory = $false)]
+  [string]$BuildCpuRequest = '300m',
+
+  [Parameter(Mandatory = $false)]
+  [string]$BuildMemoryRequest = '256Mi',
+
+  [Parameter(Mandatory = $false)]
+  [string]$BuildBaseImage = 'redhat-docker-remote.artifactory.dhl.com/ubi8/python-312:sha256__47056fa31a255ebd2b08c469b25e6ee5f516280937c024c40372de9e9cc492d5',
+
+  [Parameter(Mandatory = $false)]
+  [bool]$BuildForcePull = $true,
+
+  [Parameter(Mandatory = $false)]
+  [bool]$BuildNoCache = $true,
 
   [Parameter(Mandatory = $false)]
   [int]$BuildTimeoutSeconds = 1800,
@@ -74,17 +99,27 @@ function Ensure-GitSourceSecret {
 
   Invoke-Oc -n $Namespace get secret $secretName | Out-Null
 
-  Invoke-Oc -n $Namespace patch bc $BuildConfigName --type=merge -p "{\"spec\":{\"source\":{\"sourceSecret\":{\"name\":\"$secretName\"}}}}"
+  $sourcePatch = '{"spec":{"source":{"sourceSecret":{"name":"{0}"}}}}' -f $secretName
+  Invoke-Oc @('-n', $Namespace, 'patch', 'bc', $BuildConfigName, '--type=merge', '-p', $sourcePatch)
   Write-Host "Git source secret linked to BuildConfig: $secretName" -ForegroundColor Green
 }
 
 function Invoke-BuildAndWait {
   param(
     [Parameter(Mandatory = $true)][string]$BuildConfigName,
+    [Parameter(Mandatory = $true)][string]$Mode,
+    [string]$FromDir,
     [Parameter(Mandatory = $true)][int]$TimeoutSeconds
   )
 
-  $buildName = (& oc start-build $BuildConfigName -o name)
+  if ($Mode -eq 'Binary') {
+    if (-not $FromDir) {
+      throw "Binary build requires -FromDir."
+    }
+    $buildName = (& oc start-build $BuildConfigName --from-dir=$FromDir -o name)
+  } else {
+    $buildName = (& oc start-build $BuildConfigName -o name)
+  }
   if ($LASTEXITCODE -ne 0 -or -not $buildName) {
     throw "Could not start build for BuildConfig '$BuildConfigName'."
   }
@@ -185,6 +220,56 @@ function Convert-BuildConfigToGitSource {
   )
 }
 
+function Ensure-BuildConfigResources {
+  param([Parameter(Mandatory = $true)][string]$BuildConfigName)
+
+  $patch = @{
+    spec = @{
+      resources = @{
+        limits = @{
+          cpu = $BuildCpuLimit
+          memory = $BuildMemoryLimit
+        }
+        requests = @{
+          cpu = $BuildCpuRequest
+          memory = $BuildMemoryRequest
+        }
+      }
+    }
+  } | ConvertTo-Json -Depth 10 -Compress
+
+  Invoke-Oc @('-n', $Namespace, 'patch', 'bc', $BuildConfigName, '--type=merge', '-p', $patch)
+  Write-Host "BuildConfig resources set (limits/requests) for quota compliance." -ForegroundColor Green
+}
+
+function Ensure-BuildConfigBaseImage {
+  param([Parameter(Mandatory = $true)][string]$BuildConfigName)
+
+  if (-not $BuildBaseImage) {
+    Write-Host "Build base image override not set; BuildConfig will use Dockerfile FROM as-is." -ForegroundColor Yellow
+    return
+  }
+
+  $patch = @{
+    spec = @{
+      strategy = @{
+        dockerStrategy = @{
+          from = @{
+            kind = 'DockerImage'
+            name = $BuildBaseImage
+          }
+          forcePull = $BuildForcePull
+          noCache = $BuildNoCache
+          dockerfilePath = 'Dockerfile'
+        }
+      }
+    }
+  } | ConvertTo-Json -Depth 10 -Compress
+
+  Invoke-Oc @('-n', $Namespace, 'patch', 'bc', $BuildConfigName, '--type=merge', '-p', $patch)
+  Write-Host "BuildConfig base image set to: $BuildBaseImage" -ForegroundColor Green
+}
+
 if (-not (Get-Command oc -ErrorAction SilentlyContinue)) {
   throw 'Could not find `oc` in PATH. Install OpenShift CLI before continuing.'
 }
@@ -211,7 +296,7 @@ $sourceFiles = Get-ChildItem -Path $SourceEnvDir -Filter *.yaml |
 foreach ($file in $sourceFiles) {
   $raw = Get-Content -Path $file.FullName -Raw
   $rendered = Convert-ManifestContent -Content $raw -Env $Environment
-  if ($file.Name -like '02-*-bc-*.yaml') {
+  if ($BuildSource -eq 'Git' -and $file.Name -like '02-*-bc-*.yaml') {
     $rendered = Convert-BuildConfigToGitSource -Content $rendered -RepoUri $GitUri -Ref $GitRef
   }
   $targetName = ($file.Name -replace '-test\b', "-$Environment-dfn")
@@ -234,11 +319,20 @@ foreach ($manifest in $coreManifestFiles) {
 Write-Host "[2/7] Applying ImageStream and BuildConfig..." -ForegroundColor Cyan
 Invoke-Oc apply -f $isFile
 Invoke-Oc apply -f $bcFile
-Ensure-GitSourceSecret -BuildConfigName $bcName
+Ensure-BuildConfigResources -BuildConfigName $bcName
+Ensure-BuildConfigBaseImage -BuildConfigName $bcName
+if ($BuildSource -eq 'Git') {
+  Ensure-GitSourceSecret -BuildConfigName $bcName
+}
 
 if (-not $SkipBuild) {
-  Write-Host "[3/7] Running Git build from $GitUri (ref: $GitRef)..." -ForegroundColor Cyan
-  Invoke-BuildAndWait -BuildConfigName $bcName -TimeoutSeconds $BuildTimeoutSeconds
+  if ($BuildSource -eq 'Git') {
+    Write-Host "[3/7] Running Git build from $GitUri (ref: $GitRef)..." -ForegroundColor Cyan
+    Invoke-BuildAndWait -BuildConfigName $bcName -Mode 'Git' -TimeoutSeconds $BuildTimeoutSeconds
+  } else {
+    Write-Host "[3/7] Running Binary build from local repository..." -ForegroundColor Cyan
+    Invoke-BuildAndWait -BuildConfigName $bcName -Mode 'Binary' -FromDir $RepoRoot -TimeoutSeconds $BuildTimeoutSeconds
+  }
 } else {
   Write-Host "[3/7] Build skipped via -SkipBuild parameter" -ForegroundColor Yellow
 }
