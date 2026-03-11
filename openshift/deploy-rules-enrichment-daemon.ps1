@@ -46,10 +46,13 @@ $bcName = "$appBase-bc"
 $isFile = Join-Path $EnvDir "01-rules-enrichment-daemon-is-$Environment.yaml"
 $bcFile = Join-Path $EnvDir "02-rules-enrichment-daemon-bc-$Environment.yaml"
 $migrateFile = Join-Path $EnvDir "12-rules-daemon-migrate-job-$Environment.yaml"
+$coreManifestFiles = Get-ChildItem -Path $EnvDir -Filter *.yaml | Where-Object { $_.FullName -ne $migrateFile }
 
 Write-Host "[1/7] Running dry-run validation (client/server)..." -ForegroundColor Cyan
-Invoke-Oc apply --dry-run=client -f $EnvDir | Out-Null
-Invoke-Oc apply --dry-run=server -f $EnvDir | Out-Null
+foreach ($manifest in $coreManifestFiles) {
+  Invoke-Oc apply --dry-run=client -f $manifest.FullName | Out-Null
+  Invoke-Oc apply --dry-run=server -f $manifest.FullName | Out-Null
+}
 
 Write-Host "[2/7] Applying ImageStream and BuildConfig..." -ForegroundColor Cyan
 Invoke-Oc apply -f $isFile
@@ -63,7 +66,9 @@ if (-not $SkipBuild) {
 }
 
 Write-Host "[4/7] Applying manifests for environment $Environment..." -ForegroundColor Cyan
-Invoke-Oc apply -f $EnvDir
+foreach ($manifest in $coreManifestFiles) {
+  Invoke-Oc apply -f $manifest.FullName
+}
 
 Write-Host "[5/7] Waiting for deployments..." -ForegroundColor Cyan
 Invoke-Oc rollout status deployment/daemon-postgres-$Environment-d --timeout=300s
