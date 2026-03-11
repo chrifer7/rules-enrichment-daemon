@@ -1,70 +1,51 @@
-﻿# rules-enrichment-daemon
+# rules-enrichment-daemon
 
-Daemon de enrichment desacoplado para órdenes de fulfillment. Lee órdenes candidatas desde API externa, evalúa reglas internas, construye payload de enrichment, lo envía al sistema externo y registra trazabilidad con outbox transaccional.
+`rules-enrichment-daemon` is a background enrichment service for fulfillment orders.
+It continuously fetches candidate orders from an external WMS-compatible API, evaluates business rules, sends enrichment payloads back to the external system, and stores processing/audit data locally.
 
-## Visión general
+This repository is intended to be shared across multiple teams, so this README is written as the primary onboarding and operations guide.
 
-Flujo principal:
+## What This Service Does
 
-1. Poll de órdenes `READY_FOR_ENRICHMENT` desde API externa.
-2. Carga/caché de reglas activas desde DB interna.
-3. Evaluación de reglas por specifications declarativas.
-4. Construcción de payload de enrichment con builder.
-5. Submit a API externa con retry + backoff + jitter.
-6. Persistencia local de intentos/resultado/idempotencia.
-7. Inserción de eventos en `outbox_messages` dentro de la misma transacción.
-8. Worker separado publica outbox a sink desacoplado.
+Main responsibilities:
 
-## Arquitectura
+1. Poll orders with status `READY_FOR_ENRICHMENT` from an external API.
+2. Load active enrichment rules from its internal database.
+3. Evaluate rules against each order (deterministic rule engine).
+4. Build enrichment payloads in a consistent contract format.
+5. Submit enrichment to external API with retry/backoff.
+6. Persist processing attempts, outcomes, idempotency state, and audit records.
+7. Write integration events to a transactional outbox for reliable publishing.
 
-- `domain`: entidades, value objects, enums, specifications, servicios.
-- `application`: casos de uso, DTOs, facades, puertos y mappers.
-- `infrastructure`: DB/ORM, repositorios SQLAlchemy, UoW, HTTP adapters, workers.
-- `interfaces`: CLI (`run-daemon`, `publish-outbox`, `seed-rules`, etc.) y health API.
-- `shared`: logging ECS, errores tipados, Result, clock, id generator.
+## What This Service Does Not Do
 
-## Decisiones clave
+1. It is not an order management system.
+2. It is not the source of truth for order lifecycle.
+3. It does not include a full enterprise message bus outbox publisher yet (current sink is log/webhook based).
 
-- **Transactional Outbox**: evita inconsistencias entre estado local y publicación de eventos.
-- **ECS logging a stdout**: observabilidad orientada a Elastic/Kibana.
-- **Adapter por puerto para WMS externo**: permite swap simulador -> API real sin tocar el núcleo.
-- **Idempotencia**: `processed_orders` con hash de enrichment para evitar reprocesos duplicados.
+## High-Level Flow
 
-## Logging ECS
+1. Poll candidates from external API.
+2. Resolve rule set (with cache/TTL).
+3. Evaluate rules and compute enrichment result.
+4. Submit enrichment to external API.
+5. Persist attempt + status + idempotency hash.
+6. Insert outbox event in same transaction.
+7. Separate publisher process can publish outbox messages.
 
-Configuración por env:
+## Architecture
 
-- `LOG_ECS_ENABLED=true`
-- `LOG_TO_STDOUT=true`
-- `LOG_TO_FILE=false` (opcional)
+The codebase follows a layered structure with clear boundaries:
 
-Campos relevantes incluidos en logs:
+- `domain`: entities, value objects, rule evaluation logic, business invariants.
+- `application`: use cases, DTOs, facades, ports.
+- `infrastructure`: SQLAlchemy repositories, DB session/UoW, HTTP adapters, workers.
+- `interfaces`: CLI entrypoints and health API.
+- `shared`: logging, IDs, result/error helpers, clock.
 
-- `event.action`, `event.category`, `event.outcome`
-- `daemon.run_id`, `correlation.id`, `order.id`
-- `client.code`, `facility.code`, `attempt`, `duration.ms`
-- `error.type`, `error.message`
+This separation allows replacing infrastructure (for example, simulator API -> real API) with minimal impact on business logic.
 
-Ejemplo simplificado:
-
-```json
-{
-  "@timestamp": "2026-03-07T20:10:12.123Z",
-  "log.level": "info",
-  "message": "Polling cycle finished",
-  "service.name": "rules-enrichment-daemon",
-  "event.action": "poll_cycle_end",
-  "event.category": "process",
-  "event.outcome": "success",
-  "daemon.run_id": "f9d4...",
-  "duration.ms": 421,
-  "orders.fetched": 20,
-  "orders.success": 20,
-  "orders.failed": 0
-}
-```
-
-## Estructura
+## Repository Structure
 
 ```text
 rules-enrichment-daemon/
@@ -74,21 +55,23 @@ rules-enrichment-daemon/
     infrastructure/
     interfaces/
     shared/
+  migrations/
   tests/
     unit/
     integration/
     contract/
-  migrations/
+  openshift/
+    dev/
+    test/
   Dockerfile
   docker-compose.yml
   pyproject.toml
   README.md
-  examples.http
 ```
 
-## Base de datos
+## Data Model
 
-Tablas principales:
+Core tables:
 
 - `enrichment_rules`
 - `processing_attempts`
@@ -98,86 +81,151 @@ Tablas principales:
 - `dead_letter_items`
 - `rule_audit_entries`
 
-Migraciones:
+## CLI Commands
 
-```bash
-alembic upgrade head
-```
+Installed scripts (from `pyproject.toml`):
 
-## Configuración
+- `run-daemon`
+- `publish-outbox`
+- `seed-rules`
+- `replay-dead-letter` (placeholder)
+- `health-check`
+- `validate-rules`
 
-Copiar `.env.example` a `.env` y ajustar:
+## External API Contract Expected
 
-- `EXTERNAL_API_BASE_URL` (simulador Manhattan)
-- `DATABASE_URL`
-- `POLL_INTERVAL_SECONDS`
-- `POLL_BATCH_SIZE`
-- `MAX_PROCESSING_ATTEMPTS`
-- `OUTBOX_PUBLISH_INTERVAL_SECONDS`
-
-## Ejecución local
-
-Instalación:
-
-```bash
-pip install -e .[dev]
-```
-
-Seed de reglas:
-
-```bash
-seed-rules
-```
-
-Daemon:
-
-```bash
-run-daemon
-```
-
-Publicación outbox manual:
-
-```bash
-publish-outbox
-```
-
-Health API:
-
-```bash
-uvicorn app.interfaces.health.api:app --host 0.0.0.0 --port 8080
-```
-
-## Docker
-
-Levantar daemon + postgres:
-
-```bash
-docker compose up --build
-```
-
-## Tests
-
-```bash
-pytest -q
-```
-
-Cobertura incluida:
-
-- unit: rule evaluation, payload builder
-- integration: repository roundtrip
-- contract: shape de payload de enrichment
-
-## Integración con simulador
-
-Se espera API externa compatible con:
+The daemon expects an external API compatible with:
 
 - `GET /api/v1/orders?status=READY_FOR_ENRICHMENT&updated_since=...`
 - `GET /api/v1/orders/{order_id}`
 - `POST /api/v1/orders/{order_id}/enrichment`
 
-## Limitaciones actuales
+`manhattan-simulator` in this workspace implements this contract for local/dev integration.
 
-- Publisher outbox usa sink log/webhook simple (no bus de mensajería real).
-- `replay-dead-letter` está como placeholder.
-- Métricas Prometheus no implementadas (estructura preparada).
-- Elastic APM preparado por configuración, sin agente activado por defecto.
+## Configuration
+
+Copy `.env.example` to `.env` and adjust values.
+
+Most important variables:
+
+- `EXTERNAL_API_BASE_URL`: external system base URL.
+- `DATABASE_URL`: PostgreSQL URL.
+- `USE_SQLITE` / `SQLITE_DATABASE_URL`: local SQLite mode.
+- `POLL_INTERVAL_SECONDS`
+- `POLL_BATCH_SIZE`
+- `RULE_CACHE_TTL_SECONDS`
+- `MAX_PROCESSING_ATTEMPTS`
+- `OUTBOX_PUBLISH_INTERVAL_SECONDS`
+- `OUTBOX_SINK_MODE` (`log` or `webhook`)
+
+### Logging / Observability
+
+ECS-style logging is supported:
+
+- `LOG_ECS_ENABLED=true`
+- `LOG_TO_STDOUT=true`
+- `LOG_TO_FILE=false`
+
+Designed for ingestion into Elastic/Kibana.
+
+## Local Development
+
+### 1) Install
+
+```bash
+pip install -e .[dev]
+```
+
+### 2) Database migrations
+
+```bash
+alembic upgrade head
+```
+
+### 3) Seed rules
+
+```bash
+seed-rules
+```
+
+### 4) Run daemon
+
+```bash
+run-daemon
+```
+
+### 5) Optional: run health API
+
+```bash
+uvicorn app.interfaces.health.api:app --host 0.0.0.0 --port 8080
+```
+
+## Docker Compose (Local Integration)
+
+Start daemon + postgres:
+
+```bash
+docker compose up --build
+```
+
+By default, compose config points the daemon to `http://host.docker.internal:8000` for the simulator.
+
+## Testing
+
+Run test suite:
+
+```bash
+pytest -q
+```
+
+Test scope includes:
+
+- unit tests (rule engine, payload logic)
+- integration tests (repository roundtrip)
+- contract tests (payload shape)
+
+## OpenShift Deployment Assets
+
+This repository includes OpenShift manifests under:
+
+- `openshift/dev`
+- `openshift/test`
+
+Naming convention (lowercase):
+
+- `-is` for ImageStream
+- `-bc` for BuildConfig
+- `-d` for Deployment
+
+Automation script:
+
+- `openshift/deploy-rules-enrichment-daemon.ps1`
+
+## Troubleshooting Quick Guide
+
+1. Daemon not processing orders:
+- check `EXTERNAL_API_BASE_URL`
+- verify simulator availability
+- inspect daemon logs
+
+2. DB connection errors:
+- validate `DATABASE_URL`
+- verify postgres pod/service and migrations
+
+3. Migrations failing:
+- inspect job logs
+- confirm image contains `alembic.ini` and `migrations/`
+
+## Current Limitations
+
+1. Outbox publisher sink is currently log/webhook oriented, not a full enterprise broker integration.
+2. `replay-dead-letter` is still a placeholder command.
+3. Prometheus metrics are not implemented yet.
+
+## Collaboration Notes
+
+When contributing:
+
+1. Keep domain logic in `domain`/`application`, not in adapters/controllers.
+2. Preserve contract compatibility unless a versioned change is agreed.
+3. Update tests and this README for behavior changes affecting operations.
