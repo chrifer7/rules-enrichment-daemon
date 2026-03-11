@@ -35,3 +35,12 @@ Examples:
 .\deploy-rules-enrichment-daemon-dfn.ps1 -Environment prod -Namespace dsc-dhl-fulfillment-network-mida
 ```
 
+Authentication options (optional):
+- `-OcServer` and `-OcToken` for `oc login` inside the script
+- `-OcInsecureSkipTlsVerify` if your corporate cluster requires it
+- `-GitSecretName` to reference an existing OpenShift secret for private Git clone
+
+You can also provide these as environment variables:
+- `OPENSHIFT_SERVER`, `OPENSHIFT_TOKEN`
+- `GIT_SOURCE_SECRET_NAME`
+

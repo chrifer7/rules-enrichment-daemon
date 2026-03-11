@@ -7,6 +7,27 @@ param(
   [string]$Namespace = 'dsc-dhl-fulfillment-network-mida',
 
   [Parameter(Mandatory = $false)]
+  [string]$OcServer = '',
+
+  [Parameter(Mandatory = $false)]
+  [string]$OcToken = '',
+
+  [Parameter(Mandatory = $false)]
+  [switch]$OcInsecureSkipTlsVerify,
+
+  [Parameter(Mandatory = $false)]
+  [string]$GitUri = 'https://git.dhl.com/EU-FFN/rules-enrichment-daemon.git',
+
+  [Parameter(Mandatory = $false)]
+  [string]$GitRef = 'main',
+
+  [Parameter(Mandatory = $false)]
+  [string]$GitSecretName = '',
+
+  [Parameter(Mandatory = $false)]
+  [int]$BuildTimeoutSeconds = 1800,
+
+  [Parameter(Mandatory = $false)]
   [switch]$SkipBuild,
 
   [Parameter(Mandatory = $false)]
@@ -21,6 +42,88 @@ function Invoke-Oc {
   if ($LASTEXITCODE -ne 0) {
     throw "Command failed: oc $($Args -join ' ')"
   }
+}
+
+function Ensure-OcSession {
+  $resolvedToken = if ($OcToken) { $OcToken } elseif ($env:OPENSHIFT_TOKEN) { $env:OPENSHIFT_TOKEN } else { '' }
+  $resolvedServer = if ($OcServer) { $OcServer } elseif ($env:OPENSHIFT_SERVER) { $env:OPENSHIFT_SERVER } else { '' }
+
+  if ($resolvedToken -and $resolvedServer) {
+    Write-Host "Authenticating to OpenShift server..." -ForegroundColor Cyan
+    if ($OcInsecureSkipTlsVerify) {
+      Invoke-Oc login --token=$resolvedToken --server=$resolvedServer --insecure-skip-tls-verify=true | Out-Null
+    } else {
+      Invoke-Oc login --token=$resolvedToken --server=$resolvedServer | Out-Null
+    }
+  } else {
+    Invoke-Oc whoami | Out-Null
+  }
+
+  Invoke-Oc project $Namespace | Out-Null
+}
+
+function Ensure-GitSourceSecret {
+  param(
+    [Parameter(Mandatory = $true)][string]$BuildConfigName
+  )
+
+  $secretName = if ($GitSecretName) { $GitSecretName } elseif ($env:GIT_SOURCE_SECRET_NAME) { $env:GIT_SOURCE_SECRET_NAME } else { '' }
+  if (-not $secretName) {
+    throw "Git source secret name is required. Provide -GitSecretName or set GIT_SOURCE_SECRET_NAME."
+  }
+
+  Invoke-Oc -n $Namespace get secret $secretName | Out-Null
+
+  Invoke-Oc -n $Namespace patch bc $BuildConfigName --type=merge -p "{\"spec\":{\"source\":{\"sourceSecret\":{\"name\":\"$secretName\"}}}}"
+  Write-Host "Git source secret linked to BuildConfig: $secretName" -ForegroundColor Green
+}
+
+function Invoke-BuildAndWait {
+  param(
+    [Parameter(Mandatory = $true)][string]$BuildConfigName,
+    [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+  )
+
+  $buildName = (& oc start-build $BuildConfigName -o name)
+  if ($LASTEXITCODE -ne 0 -or -not $buildName) {
+    throw "Could not start build for BuildConfig '$BuildConfigName'."
+  }
+  $buildName = $buildName.Trim()
+  Write-Host "Build started: $buildName" -ForegroundColor Cyan
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    $phase = (& oc get $buildName -o jsonpath='{.status.phase}' 2>$null)
+    if ($LASTEXITCODE -ne 0) { $phase = '' }
+    $phase = ($phase | Out-String).Trim()
+
+    switch ($phase) {
+      'Complete' {
+        Write-Host "Build completed: $buildName" -ForegroundColor Green
+        & oc logs $buildName --tail=200
+        return
+      }
+      'Failed' {
+        & oc logs $buildName --tail=400
+        throw "Build failed: $buildName"
+      }
+      'Error' {
+        & oc logs $buildName --tail=400
+        throw "Build errored: $buildName"
+      }
+      'Cancelled' {
+        & oc logs $buildName --tail=400
+        throw "Build was cancelled: $buildName"
+      }
+      default {
+        Write-Host "Waiting for build phase... current='$phase'" -ForegroundColor DarkGray
+        Start-Sleep -Seconds 10
+      }
+    }
+  }
+
+  & oc logs $buildName --tail=400
+  throw "Timed out waiting for build to complete after $TimeoutSeconds seconds: $buildName"
 }
 
 function Convert-ManifestContent {
@@ -60,12 +163,33 @@ function Convert-ManifestContent {
   return $updated
 }
 
+function Convert-BuildConfigToGitSource {
+  param(
+    [Parameter(Mandatory = $true)][string]$Content,
+    [Parameter(Mandatory = $true)][string]$RepoUri,
+    [Parameter(Mandatory = $true)][string]$Ref
+  )
+
+  $sourceBlock = @"
+  source:
+    type: Git
+    git:
+      uri: $RepoUri
+      ref: $Ref
+"@
+
+  return [regex]::Replace(
+    $Content,
+    '(?ms)^\s{2}source:\r?\n\s{4}type:\s*Binary\s*$',
+    $sourceBlock
+  )
+}
+
 if (-not (Get-Command oc -ErrorAction SilentlyContinue)) {
   throw 'Could not find `oc` in PATH. Install OpenShift CLI before continuing.'
 }
 
-Invoke-Oc whoami | Out-Null
-Invoke-Oc project $Namespace | Out-Null
+Ensure-OcSession
 
 $ScriptDir = Split-Path -Parent $PSCommandPath
 $RepoRoot = Split-Path -Parent $ScriptDir
@@ -87,6 +211,9 @@ $sourceFiles = Get-ChildItem -Path $SourceEnvDir -Filter *.yaml |
 foreach ($file in $sourceFiles) {
   $raw = Get-Content -Path $file.FullName -Raw
   $rendered = Convert-ManifestContent -Content $raw -Env $Environment
+  if ($file.Name -like '02-*-bc-*.yaml') {
+    $rendered = Convert-BuildConfigToGitSource -Content $rendered -RepoUri $GitUri -Ref $GitRef
+  }
   $targetName = ($file.Name -replace '-test\b', "-$Environment-dfn")
   Set-Content -Path (Join-Path $renderDir $targetName) -Value $rendered -NoNewline
 }
@@ -107,10 +234,11 @@ foreach ($manifest in $coreManifestFiles) {
 Write-Host "[2/7] Applying ImageStream and BuildConfig..." -ForegroundColor Cyan
 Invoke-Oc apply -f $isFile
 Invoke-Oc apply -f $bcFile
+Ensure-GitSourceSecret -BuildConfigName $bcName
 
 if (-not $SkipBuild) {
-  Write-Host "[3/7] Running binary build from repository..." -ForegroundColor Cyan
-  Invoke-Oc start-build $bcName --from-dir=$RepoRoot --follow
+  Write-Host "[3/7] Running Git build from $GitUri (ref: $GitRef)..." -ForegroundColor Cyan
+  Invoke-BuildAndWait -BuildConfigName $bcName -TimeoutSeconds $BuildTimeoutSeconds
 } else {
   Write-Host "[3/7] Build skipped via -SkipBuild parameter" -ForegroundColor Yellow
 }
