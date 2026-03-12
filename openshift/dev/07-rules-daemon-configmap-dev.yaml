@@ -14,7 +14,7 @@ data:
   LOG_TO_STDOUT: "true"
   LOG_TO_FILE: "false"
   USE_SQLITE: "false"
-  EXTERNAL_API_BASE_URL: http://manhattan-simulator-
+  EXTERNAL_API_BASE_URL: http://manhattan-simulator-dev:8000
   EXTERNAL_API_TIMEOUT_SECONDS: "8"
   POLL_INTERVAL_SECONDS: "10"
   POLL_BATCH_SIZE: "25"

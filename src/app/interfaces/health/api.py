@@ -7,6 +7,19 @@ bootstrap = Bootstrap()
 app = FastAPI(title="Rules Enrichment Daemon Health", version=bootstrap.settings.app_version)
 
 
+@app.get("/live")
+def live() -> dict[str, str]:
+    # Liveness must not depend on upstream systems.
+    return {"status": "alive"}
+
+
+@app.get("/ready")
+def ready() -> dict[str, str]:
+    # Readiness in this deployment is process-level to avoid restarts caused by
+    # temporary upstream outages.
+    return {"status": "ready"}
+
+
 @app.get("/health")
 def health() -> dict[str, bool]:
     return {

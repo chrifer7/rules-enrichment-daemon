@@ -6,6 +6,7 @@ import typer
 
 from app.bootstrap import Bootstrap
 from app.domain.entities.enrichment_rule import EnrichmentRule
+from app.shared.errors.errors import ExternalApiTimeoutError, ExternalApiUnavailableError
 
 cli = typer.Typer(help="Rules Enrichment Daemon CLI")
 logger = logging.getLogger(__name__)
@@ -22,8 +23,31 @@ def run_daemon() -> None:
         extra={"event.action": "daemon_start", "event.category": "process", "event.outcome": "success"},
     )
     while True:
-        poll_worker.run_once()
-        outbox_worker.run_once()
+        try:
+            poll_worker.run_once()
+            outbox_worker.run_once()
+        except (ExternalApiTimeoutError, ExternalApiUnavailableError) as exc:
+            # Keep daemon alive on temporary upstream connectivity issues.
+            logger.warning(
+                "daemon_iteration_external_api_error",
+                extra={
+                    "event.action": "daemon_iteration",
+                    "event.category": "process",
+                    "event.outcome": "failure",
+                    "error.type": type(exc).__name__,
+                    "error.message": str(exc),
+                },
+            )
+        except Exception:
+            # Avoid pod crash loops due to unexpected transient errors.
+            logger.exception(
+                "daemon_iteration_unhandled_error",
+                extra={
+                    "event.action": "daemon_iteration",
+                    "event.category": "process",
+                    "event.outcome": "failure",
+                },
+            )
         time.sleep(bootstrap.settings.poll_interval_seconds)
 
 
