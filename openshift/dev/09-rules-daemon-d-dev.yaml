@@ -20,6 +20,9 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      volumes:
+        - name: daemon-logs
+          emptyDir: {}
       containers:
         - name: daemon
           image: rules-enrichment-daemon-dev-is:latest
@@ -42,6 +45,52 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+          volumeMounts:
+            - name: daemon-logs
+              mountPath: /tmp/rules-enrichment-daemon
+        - name: log-shipper
+          image: rules-enrichment-daemon-dev-is:latest
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "app.interfaces.cli.main", "forward-log-file"]
+          envFrom:
+            - configMapRef:
+                name: rules-enrichment-daemon-dev-config
+            - secretRef:
+                name: rules-enrichment-daemon-dev-secret
+          env:
+            - name: LOG_TO_FILE
+              value: "false"
+            - name: LOG_TO_STDOUT
+              value: "true"
+            - name: LOG_FILE_PATH
+              value: /tmp/rules-enrichment-daemon/daemon.log
+            - name: LOG_SHIPPER_ELASTICSEARCH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-auth
+                  key: ES_USERNAME
+                  optional: true
+            - name: LOG_SHIPPER_ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: elasticsearch-auth
+                  key: ES_PASSWORD
+                  optional: true
+          resources:
+            requests:
+              cpu: 25m
+              memory: 96Mi
+            limits:
+              cpu: 150m
+              memory: 192Mi
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: daemon-logs
+              mountPath: /tmp/rules-enrichment-daemon
         - name: health
           image: rules-enrichment-daemon-dev-is:latest
           imagePullPolicy: IfNotPresent
@@ -54,6 +103,11 @@ spec:
                 name: rules-enrichment-daemon-dev-config
             - secretRef:
                 name: rules-enrichment-daemon-dev-secret
+          env:
+            - name: LOG_TO_FILE
+              value: "false"
+            - name: LOG_TO_STDOUT
+              value: "true"
           readinessProbe:
             httpGet:
               path: /health

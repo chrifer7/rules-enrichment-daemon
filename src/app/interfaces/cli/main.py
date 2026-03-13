@@ -6,6 +6,8 @@ import typer
 
 from app.bootstrap import Bootstrap
 from app.domain.entities.enrichment_rule import EnrichmentRule
+from app.config.settings import get_settings
+from app.infrastructure.logshipping.elasticsearch_log_shipper import ElasticsearchLogShipper
 from app.shared.errors.errors import ExternalApiTimeoutError, ExternalApiUnavailableError
 
 cli = typer.Typer(help="Rules Enrichment Daemon CLI")
@@ -56,6 +58,13 @@ def publish_outbox() -> None:
     bootstrap = Bootstrap()
     published = bootstrap.outbox_worker().run_once()
     typer.echo(f"published={published}")
+
+
+@cli.command("forward-log-file")
+def forward_log_file() -> None:
+    settings = get_settings()
+    logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
+    ElasticsearchLogShipper(settings).run_forever()
 
 
 @cli.command("seed-rules")

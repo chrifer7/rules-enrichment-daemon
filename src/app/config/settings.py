@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     log_to_stdout: bool = True
     log_to_file: bool = False
     log_file_path: str = "./logs/daemon.log"
+    log_shipper_elasticsearch_url: str = "http://localhost:9200"
+    log_shipper_elasticsearch_username: str = "elastic"
+    log_shipper_elasticsearch_password: str = ""
+    log_shipper_index_prefix: str = "rules-enrichment-daemon-logs"
+    log_shipper_flush_interval_seconds: int = Field(default=5, ge=1)
 
     external_api_base_url: str = "http://localhost:8000"
     external_api_timeout_seconds: int = Field(default=8, ge=1)

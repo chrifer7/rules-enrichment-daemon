@@ -215,6 +215,12 @@ function Convert-ManifestContent {
     "`${1}http://manhattan-simulator-dfn-$Env.$Namespace.svc:8000`${2}",
     'Multiline'
   )
+  $updated = [regex]::Replace(
+    $updated,
+    '(^\s*LOG_SHIPPER_ELASTICSEARCH_URL:\s*).*(\s*$)',
+    "`${1}http://elasticsearch-$Env-dfn.$Namespace.svc:9200`${2}",
+    'Multiline'
+  )
 
   # Force SQLite in DFN mode to avoid PVC quota and Postgres dependencies.
   $updated = [regex]::Replace(

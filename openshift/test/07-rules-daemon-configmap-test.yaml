@@ -12,7 +12,11 @@ data:
   LOG_LEVEL: INFO
   LOG_ECS_ENABLED: "true"
   LOG_TO_STDOUT: "true"
-  LOG_TO_FILE: "false"
+  LOG_TO_FILE: "true"
+  LOG_FILE_PATH: /tmp/rules-enrichment-daemon/daemon.log
+  LOG_SHIPPER_ELASTICSEARCH_URL: http://elasticsearch-test-dfn.dsc-dhl-fulfillment-network-mida.svc:9200
+  LOG_SHIPPER_INDEX_PREFIX: rules-enrichment-daemon-logs
+  LOG_SHIPPER_FLUSH_INTERVAL_SECONDS: "5"
   USE_SQLITE: "false"
   EXTERNAL_API_BASE_URL: http://manhattan-simulator-test:8000
   EXTERNAL_API_TIMEOUT_SECONDS: "8"
