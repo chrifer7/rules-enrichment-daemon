@@ -1,4 +1,5 @@
 import logging
+from collections import Counter
 from datetime import datetime, timezone
 
 from app.application.use_cases.poll_orders import PollOrdersForEnrichmentUseCase
@@ -35,6 +36,16 @@ class EnrichmentFacade:
     def _as_utc(value: datetime) -> datetime:
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
+    @staticmethod
+    def _sample_unique(values: list[str], *, limit: int = 10) -> tuple[list[str], bool]:
+        seen: list[str] = []
+        for value in values:
+            if value not in seen:
+                seen.append(value)
+            if len(seen) >= limit:
+                break
+        return seen, len(set(values)) > limit
+
     def run_once(self, updated_since: datetime | None = None) -> tuple[int, int, int, datetime]:
         started = self._clock.now()
         run_id = self._ids.new_id()
@@ -66,6 +77,38 @@ class EnrichmentFacade:
                 }
             ),
         )
+        if not orders:
+            logger.info(
+                "No candidate orders returned by external API",
+                extra=context.to_extra(
+                    **{
+                        "event.action": "poll_fetch_empty",
+                        "event.category": "process",
+                        "event.outcome": "success",
+                        "poll.updated_since": updated_since.isoformat() if updated_since else None,
+                    }
+                ),
+            )
+        else:
+            client_codes, client_codes_truncated = self._sample_unique([o.client_code for o in orders])
+            facility_codes, facility_codes_truncated = self._sample_unique([o.facility_code for o in orders])
+            logger.info(
+                "Candidate orders fetched",
+                extra=context.to_extra(
+                    **{
+                        "event.action": "poll_fetch_candidates",
+                        "event.category": "process",
+                        "event.outcome": "success",
+                        "orders.count": len(orders),
+                        "client.codes": client_codes,
+                        "client.codes_truncated": client_codes_truncated,
+                        "facility.codes": facility_codes,
+                        "facility.codes_truncated": facility_codes_truncated,
+                        "orders.sample_ids": [o.order_id for o in orders[:10]],
+                        "orders.sample_truncated": len(orders) > 10,
+                    }
+                ),
+            )
         logger.debug(
             "Polling fetch order IDs",
             extra=context.to_extra(
@@ -82,12 +125,17 @@ class EnrichmentFacade:
         success = 0
         failed = 0
         max_updated_at = self._as_utc(updated_since) if updated_since else started
+        per_client_facility_counts: Counter[str] = Counter()
+        per_client_facility_success: Counter[str] = Counter()
+        per_client_facility_failed: Counter[str] = Counter()
 
         for order in orders:
             now = self._clock.now()
             order_started = self._clock.now()
             order_updated_at = self._as_utc(order.updated_at)
             max_updated_at = max(max_updated_at, order_updated_at)
+            grouping_key = f"{order.client_code}|{order.facility_code}"
+            per_client_facility_counts[grouping_key] += 1
 
             logger.debug(
                 "Order processing started",
@@ -105,6 +153,20 @@ class EnrichmentFacade:
                         "order.lines_count": len(order.lines),
                         "order.total_weight_kg": order.total_weight_kg,
                         "order.total_volume_m3": order.total_volume_m3,
+                    }
+                ),
+            )
+            logger.info(
+                "Processing candidate order",
+                extra=context.to_extra(
+                    **{
+                        "event.action": "order_process_candidate",
+                        "event.category": "process",
+                        "event.outcome": "unknown",
+                        "order.id": order.order_id,
+                        "client.code": order.client_code,
+                        "facility.code": order.facility_code,
+                        "order.status": order.status,
                     }
                 ),
             )
@@ -136,6 +198,7 @@ class EnrichmentFacade:
             try:
                 processed, correlation_id, duplicate_skip = self._process.execute(order=order, rules=rules, now=now)
                 success += 1
+                per_client_facility_success[grouping_key] += 1
                 logger.debug(
                     "Order processing completed",
                     extra=context.to_extra(
@@ -153,8 +216,25 @@ class EnrichmentFacade:
                         }
                     ),
                 )
+                logger.info(
+                    "Order processing succeeded",
+                extra=context.to_extra(
+                    **{
+                        "event.action": "order_process_success",
+                        "event.category": "process",
+                        "event.outcome": "success",
+                        "order.id": order.order_id,
+                        "client.code": order.client_code,
+                        "facility.code": order.facility_code,
+                        "correlation.id": correlation_id,
+                        "order.processed": processed,
+                        "order.duplicate_skip": duplicate_skip,
+                        }
+                    ),
+                )
             except Exception as exc:
                 failed += 1
+                per_client_facility_failed[grouping_key] += 1
                 logger.exception(
                     "Order processing failed",
                     extra=context.to_extra(
@@ -173,6 +253,32 @@ class EnrichmentFacade:
                 )
 
         finished = self._clock.now()
+        if per_client_facility_counts:
+            grouped_summary = []
+            for grouping_key, count in per_client_facility_counts.most_common(10):
+                client_code, facility_code = grouping_key.split("|", 1)
+                grouped_summary.append(
+                    {
+                        "client.code": client_code,
+                        "facility.code": facility_code,
+                        "orders.count": count,
+                        "orders.success": per_client_facility_success[grouping_key],
+                        "orders.failed": per_client_facility_failed[grouping_key],
+                    }
+                )
+            logger.info(
+                "Polling cycle grouped summary",
+                extra=context.to_extra(
+                    **{
+                        "event.action": "poll_cycle_grouped_summary",
+                        "event.category": "process",
+                        "event.outcome": "success" if failed == 0 else "partial",
+                        "groups.count": len(per_client_facility_counts),
+                        "groups.sample": grouped_summary,
+                        "groups.sample_truncated": len(per_client_facility_counts) > 10,
+                    }
+                ),
+            )
         logger.info(
             "Polling cycle finished",
             extra=context.to_extra(

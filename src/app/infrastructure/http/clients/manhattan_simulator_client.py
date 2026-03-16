@@ -1,4 +1,4 @@
-﻿import logging
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -39,8 +39,35 @@ class ManhattanSimulatorHttpClient(ExternalWmsPort):
         params: dict[str, str | int] = {"status": "READY_FOR_ENRICHMENT", "limit": limit, "offset": 0}
         if updated_since:
             params["updated_since"] = updated_since.isoformat()
+        logger.debug(
+            "external_api_poll_prepare",
+            extra={
+                "event.action": "external_api_poll_prepare",
+                "event.category": "network",
+                "event.outcome": "unknown",
+                "external_api.status_filter": "READY_FOR_ENRICHMENT",
+                "external_api.limit": limit,
+                "external_api.updated_since": updated_since.isoformat() if updated_since else None,
+            },
+        )
         response = self._request("GET", "/api/v1/orders", params=params)
         data = response.json()
+        sample_ids = [item.get("order_id") for item in data[:10] if item.get("order_id")]
+        sample_client_codes = sorted({item.get("client_code") for item in data[:10] if item.get("client_code")})
+        sample_facility_codes = sorted({item.get("facility_code") for item in data[:10] if item.get("facility_code")})
+        logger.info(
+            "external_api_poll_result",
+            extra={
+                "event.action": "external_api_poll_result",
+                "event.category": "network",
+                "event.outcome": "success",
+                "orders.count": len(data),
+                "orders.sample_ids": sample_ids,
+                "orders.sample_truncated": len(data) > 10,
+                "client.codes": sample_client_codes,
+                "facility.codes": sample_facility_codes,
+            },
+        )
         return [self._to_order(item) for item in data]
 
     def get_order_by_id(self, order_id: str) -> ExternalOrder:
@@ -77,8 +104,44 @@ class ManhattanSimulatorHttpClient(ExternalWmsPort):
             )
             return response
         except httpx.TimeoutException as exc:
+            logger.warning(
+                "external_api_request_timeout",
+                extra={
+                    "event.action": "external_api_request",
+                    "event.category": "network",
+                    "event.outcome": "failure",
+                    "http.method": method,
+                    "url.full": url,
+                    "http.request.query": kwargs.get("params"),
+                    "error.type": type(exc).__name__,
+                    "error.message": str(exc),
+                },
+            )
             raise ExternalApiTimeoutError(str(exc)) from exc
         except httpx.HTTPError as exc:
+            status_code = None
+            response_body = None
+            if isinstance(exc, httpx.HTTPStatusError):
+                status_code = exc.response.status_code
+                try:
+                    response_body = exc.response.text[:1000]
+                except Exception:
+                    response_body = None
+            logger.warning(
+                "external_api_request_failed",
+                extra={
+                    "event.action": "external_api_request",
+                    "event.category": "network",
+                    "event.outcome": "failure",
+                    "http.method": method,
+                    "url.full": url,
+                    "http.request.query": kwargs.get("params"),
+                    "http.response.status_code": status_code,
+                    "error.type": type(exc).__name__,
+                    "error.message": str(exc),
+                    "http.response.body": response_body,
+                },
+            )
             raise ExternalApiUnavailableError(str(exc)) from exc
 
     @staticmethod
