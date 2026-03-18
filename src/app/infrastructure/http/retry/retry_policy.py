@@ -12,17 +12,22 @@ class RetryPolicy:
         self.max_delay_seconds = max_delay_seconds
 
     def run(self, fn: Callable[[], httpx.Response]) -> httpx.Response:
+        # Accept a callable instead of hard-coding a client method so the retry policy
+        # stays generic and reusable for any HTTP request shape.
         last_error: Exception | None = None
         for attempt in range(1, self.max_attempts + 1):
             try:
                 response = fn()
                 if response.status_code >= 500:
+                    # Server-side 5xx responses are treated as transient and retryable.
                     raise httpx.HTTPStatusError("server error", request=response.request, response=response)
                 return response
             except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError) as exc:
                 last_error = exc
                 if attempt == self.max_attempts:
                     raise
+                # Exponential backoff with jitter helps avoid retry storms when many
+                # clients fail at the same time and would otherwise retry in sync.
                 jitter = random.uniform(0, self.base_delay_seconds)
                 delay = min(self.max_delay_seconds, (2 ** (attempt - 1)) * self.base_delay_seconds + jitter)
                 time.sleep(delay)

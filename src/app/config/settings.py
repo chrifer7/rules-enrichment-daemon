@@ -5,10 +5,13 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    # `BaseSettings` maps environment variables to typed Python attributes.
+    # This makes configuration explicit and avoids scattered `os.getenv(...)` calls.
     app_name: str = "rules-enrichment-daemon"
     app_env: str = "local"
     app_version: str = "0.1.0"
 
+    # Logging can target stdout, a file, or both depending on the transport mode.
     log_level: str = "INFO"
     log_ecs_enabled: bool = True
     log_to_stdout: bool = True
@@ -31,6 +34,8 @@ class Settings(BaseSettings):
     max_processing_attempts: int = Field(default=3, ge=1)
     outbox_publish_interval_seconds: int = Field(default=5, ge=1)
 
+    # The PoC supports both Postgres and SQLite so it can run in different environments
+    # without changing the rest of the codebase.
     database_url: str = "postgresql+psycopg://daemon:daemon@localhost:5433/rules_enrichment_daemon"
     use_sqlite: bool = False
     sqlite_database_url: str = "sqlite+pysqlite:///./rules_enrichment_daemon.db"
@@ -54,9 +59,12 @@ class Settings(BaseSettings):
 
     @property
     def effective_database_url(self) -> str:
+        # Centralize the storage decision here so infrastructure code does not need
+        # to know whether the process is using SQLite or Postgres.
         return self.sqlite_database_url if self.use_sqlite else self.database_url
 
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    # Cache the parsed settings so the process uses one consistent configuration object.
     return Settings()

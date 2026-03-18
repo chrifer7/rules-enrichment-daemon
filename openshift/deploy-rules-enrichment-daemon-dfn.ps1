@@ -329,6 +329,10 @@ function Ensure-BuildConfigBaseImage {
 function Set-LoggingModeForDeployment {
   # Allows switching between the temporary file shipper and ClusterLogForwarder
   # without removing either implementation from the repository.
+  # Important:
+  # - 'shipper'             => daemon writes stdout + file, sidecar forwards file
+  # - 'clusterlogforwarder' => daemon writes stdout only, sidecar stays idle
+  # - 'both'                => daemon writes stdout + file, useful while migrating
   param(
     [Parameter(Mandatory = $true)][string]$ConfigMapName
   )
@@ -537,11 +541,7 @@ Write-Host "[5/7] Waiting for deployments..." -ForegroundColor Cyan
 Wait-DeploymentRolloutWithRecovery -DeploymentName "rules-enrichment-daemon-dfn-d-$Environment" -AppName "rules-enrichment-daemon" -Env $Environment -TimeoutSeconds $RolloutTimeoutSeconds
 
 if (-not $SkipMigrate) {
-  Write-Host "[6/7] Running Alembic migrations..." -ForegroundColor Cyan
-  Invoke-Oc delete job rules-daemon-dfn-migrate-$Environment --ignore-not-found=true
-  Invoke-Oc apply -f $migrateFile
-  Invoke-Oc wait --for=condition=complete --timeout="$($MigrateTimeoutSeconds)s" job/rules-daemon-dfn-migrate-$Environment
-  Invoke-Oc logs job/rules-daemon-dfn-migrate-$Environment
+  Write-Host "[6/7] SQLite mode enabled for DFN. Skipping external migration Job because the daemon bootstraps its own local database." -ForegroundColor Yellow
 } else {
   Write-Host "[6/7] Migrations skipped via -SkipMigrate parameter" -ForegroundColor Yellow
 }
@@ -561,3 +561,4 @@ try {
 }
 
 Write-Host "rules-enrichment-daemon ($Environment-dfn) deployment completed in namespace $Namespace." -ForegroundColor Green
+

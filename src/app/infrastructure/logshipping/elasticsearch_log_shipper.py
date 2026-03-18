@@ -16,6 +16,7 @@ class ElasticsearchLogShipper:
     def __init__(self, settings: Settings):
         self._settings = settings
         self._log_path = Path(settings.log_file_path)
+        # Keep the last byte offset in memory so each loop only reads newly appended lines.
         self._offset = 0
 
     def run_forever(self) -> None:
@@ -43,6 +44,7 @@ class ElasticsearchLogShipper:
 
         events: list[dict[str, Any]] = []
         with self._log_path.open("r", encoding="utf-8") as handle:
+            # Resume from the last processed byte instead of rereading the whole file.
             handle.seek(self._offset)
             for raw_line in handle:
                 line = raw_line.strip()
@@ -58,6 +60,8 @@ class ElasticsearchLogShipper:
             if not isinstance(event, dict):
                 raise ValueError("Expected JSON object.")
         except Exception:
+            # The daemon normally writes ECS JSON, but this fallback keeps the shipper
+            # resilient if a plain-text line ever appears in the file.
             event = {"message": line}
 
         event.setdefault("@timestamp", datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
@@ -75,6 +79,7 @@ class ElasticsearchLogShipper:
         payload = self._build_bulk_payload(events)
 
         with httpx.Client(timeout=self._settings.external_api_timeout_seconds) as client:
+            # `_bulk` is much cheaper than sending one HTTP request per log event.
             response = client.post(
                 f"{endpoint}/_bulk",
                 content=payload,

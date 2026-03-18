@@ -22,12 +22,23 @@ spec:
           type: RuntimeDefault
       volumes:
         - name: daemon-logs
+          # Shared scratch space inside the pod. The daemon writes the log file here and
+          # the shipper sidecar reads the same file from the same mount path.
           emptyDir: {}
       containers:
         - name: daemon
           image: rules-enrichment-daemon-dev-is:latest
           imagePullPolicy: IfNotPresent
-          command: ["python", "-m", "app.interfaces.cli.main", "run-daemon"]
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              if [ "${USE_SQLITE:-false}" = "true" ]; then
+                alembic upgrade head
+                python -m app.interfaces.cli.main seed-rules
+              fi
+              # The main application process keeps writing business logs to stdout and,
+              # when enabled, to /tmp/rules-enrichment-daemon/daemon.log.
+              python -m app.interfaces.cli.main run-daemon
           envFrom:
             - configMapRef:
                 name: rules-enrichment-daemon-dev-config
@@ -55,6 +66,7 @@ spec:
           args:
             - |
               if [ "${LOG_SHIPPER_ENABLED:-true}" = "true" ]; then
+                # Sidecar process: tail the shared log file and forward only new lines.
                 python -m app.interfaces.cli.main forward-log-file
               else
                 echo "rules-enrichment-daemon log shipper disabled; keeping sidecar idle"
@@ -67,10 +79,12 @@ spec:
                 name: rules-enrichment-daemon-dev-secret
           env:
             - name: LOG_TO_FILE
+              # This flag applies to the shipper's own logs, not to the daemon's logs.
               value: "false"
             - name: LOG_TO_STDOUT
               value: "true"
             - name: LOG_FILE_PATH
+              # Points to the shared file produced by the daemon container.
               value: /tmp/rules-enrichment-daemon/daemon.log
             - name: LOG_SHIPPER_ELASTICSEARCH_USERNAME
               valueFrom:
@@ -113,6 +127,7 @@ spec:
                 name: rules-enrichment-daemon-dev-secret
           env:
             - name: LOG_TO_FILE
+              # Health container should not write to the shared file to avoid noise.
               value: "false"
             - name: LOG_TO_STDOUT
               value: "true"

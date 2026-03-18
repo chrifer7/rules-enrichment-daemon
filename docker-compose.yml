@@ -1,5 +1,7 @@
-﻿services:
+services:
   daemon-postgres:
+    # Local development database. In restricted OpenShift deployments the PoC can
+    # switch to SQLite instead, but Compose keeps the richer Postgres path available.
     image: postgres:16-alpine
     container_name: daemon-postgres
     environment:
@@ -21,6 +23,8 @@
       context: .
       dockerfile: Dockerfile
     container_name: rules-enrichment-daemon
+    # In local Docker Compose we run the business daemon directly.
+    # In OpenShift the same image is reused by multiple containers inside one pod.
     command: ["python", "-m", "app.interfaces.cli.main", "run-daemon"]
     environment:
       DATABASE_URL: postgresql+psycopg://daemon:daemon@daemon-postgres:5432/rules_enrichment_daemon
@@ -45,8 +49,10 @@
         condition: service_healthy
 
 volumes:
+  # Named volume preserves Postgres data across local restarts.
   daemon_postgres_data:
 
 networks:
   observability:
     name: observability
+

@@ -70,6 +70,7 @@ def forward_log_file() -> None:
             extra={"event.action": "log_shipper_start", "event.category": "process", "event.outcome": "success"},
         )
         return
+    # This command is executed by the sidecar container, not by the business daemon.
     ElasticsearchLogShipper(settings).run_forever()
 
 

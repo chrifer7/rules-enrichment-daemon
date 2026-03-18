@@ -27,21 +27,31 @@ from app.shared.logging.ecs import configure_logging
 
 @dataclass(slots=True)
 class Container:
+    # This project uses a very small "container" object instead of a full DI framework.
+    # Its only goal is to hold long-lived process dependencies in one place.
     settings: Settings
     session_factory: object
 
 
 class Bootstrap:
     def __init__(self, settings: Settings | None = None):
+        # `get_settings()` is cached, so callers usually get one stable configuration
+        # object per process. This is a pragmatic choice for a daemon-style workload.
         self.settings = settings or get_settings()
         configure_logging(self.settings)
 
+        # This class is the composition root of the application: the place where
+        # concrete infrastructure implementations are wired to abstract ports/use cases.
         self.container = Container(settings=self.settings, session_factory=build_session_factory(self.settings))
 
     def uow(self) -> SqlAlchemyUnitOfWork:
+        # Return a new Unit of Work every time so each business operation gets its
+        # own fresh database session and transaction scope.
         return SqlAlchemyUnitOfWork(self.container.session_factory)
 
     def external_wms(self) -> ExternalWmsPort:
+        # The application depends on the interface `ExternalWmsPort`.
+        # Here we choose the Manhattan simulator as the concrete implementation.
         return ManhattanSimulatorHttpClient(
             base_url=self.settings.external_api_base_url,
             timeout_seconds=self.settings.external_api_timeout_seconds,
@@ -50,11 +60,16 @@ class Bootstrap:
         )
 
     def outbox_sink(self):
+        # A small strategy switch:
+        # - `webhook` sends outbox messages to an HTTP endpoint
+        # - default mode writes them as structured logs for observability/demo purposes
         if self.settings.outbox_sink_mode == "webhook" and self.settings.outbox_webhook_url:
             return WebhookOutboxSink(self.settings.outbox_webhook_url)
         return StructuredLogOutboxSink()
 
     def enrichment_facade(self) -> EnrichmentFacade:
+        # Build the orchestration facade from many narrow use cases.
+        # This keeps the business logic modular and easier to test/replace later.
         evaluate = EvaluateRulesUseCase()
         build_payload = BuildEnrichmentPayloadUseCase(
             source_system=self.settings.enrichment_source_system,
@@ -87,6 +102,8 @@ class Bootstrap:
         )
 
     def polling_worker(self) -> PollingWorker:
+        # Workers are intentionally thin. They own the "loop forever" behavior and
+        # delegate the real domain/application work to the facade layer.
         return PollingWorker(self.enrichment_facade(), self.settings.poll_interval_seconds)
 
     def outbox_worker(self) -> OutboxPublisherWorker:

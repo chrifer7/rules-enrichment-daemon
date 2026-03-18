@@ -21,6 +21,8 @@ def configure_logging(settings: Settings) -> None:
         root_logger.addHandler(stream_handler)
 
     if settings.log_to_file:
+        # The daemon and the sidecar share this path through an `emptyDir` volume:
+        # the daemon writes the file, the shipper tails it and forwards new lines.
         log_path = Path(settings.log_file_path)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_path, encoding="utf-8")
