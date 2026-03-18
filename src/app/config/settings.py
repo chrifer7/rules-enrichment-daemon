@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     log_to_stdout: bool = True
     log_to_file: bool = False
     log_file_path: str = "./logs/daemon.log"
+    log_shipper_enabled: bool = True
     log_shipper_elasticsearch_url: str = "http://localhost:9200"
     log_shipper_elasticsearch_username: str = "elastic"
     log_shipper_elasticsearch_password: str = ""

@@ -74,6 +74,10 @@ param(
   [int]$MigrateTimeoutSeconds = 900,
 
   [Parameter(Mandatory = $false)]
+  [ValidateSet('shipper', 'clusterlogforwarder', 'both')]
+  [string]$LogTransportMode = 'shipper',
+
+  [Parameter(Mandatory = $false)]
   [switch]$SkipBuild,
 
   [Parameter(Mandatory = $false)]
@@ -322,6 +326,26 @@ function Ensure-BuildConfigBaseImage {
   Write-Host "BuildConfig base image set to: $BuildBaseImage" -ForegroundColor Green
 }
 
+function Set-LoggingModeForDeployment {
+  # Allows switching between the temporary file shipper and ClusterLogForwarder
+  # without removing either implementation from the repository.
+  param(
+    [Parameter(Mandatory = $true)][string]$ConfigMapName
+  )
+
+  $shipperEnabled = if ($LogTransportMode -eq 'clusterlogforwarder') { 'false' } else { 'true' }
+  $logToFile = if ($LogTransportMode -eq 'clusterlogforwarder') { 'false' } else { 'true' }
+
+  $patch = @(
+    @{ op = 'add'; path = '/data/LOG_SHIPPER_ENABLED'; value = $shipperEnabled },
+    @{ op = 'add'; path = '/data/LOG_TO_FILE'; value = $logToFile },
+    @{ op = 'add'; path = '/data/LOG_TO_STDOUT'; value = 'true' }
+  ) | ConvertTo-Json -Depth 10 -Compress
+
+  Invoke-Oc @('-n', $Namespace, 'patch', 'configmap', $ConfigMapName, '--type=json', '-p', $patch)
+  Write-Host "Logging transport mode set to '$LogTransportMode' (LOG_SHIPPER_ENABLED=$shipperEnabled, LOG_TO_FILE=$logToFile)." -ForegroundColor Green
+}
+
 function Wait-DeploymentRolloutWithRecovery {
   # Waits for deployment rollout.
   # If rollout fails, prints diagnostics, force-deletes terminating pods,
@@ -504,6 +528,7 @@ Write-Host "[4/7] Applying manifests for environment $Environment (dfn)..." -For
 foreach ($manifest in $coreManifestFiles) {
   Invoke-Oc apply -f $manifest.FullName
 }
+Set-LoggingModeForDeployment -ConfigMapName "rules-enrichment-daemon-dfn-config-$Environment"
 # Keep only latest ReplicaSet active to avoid rollout deadlocks.
 Ensure-OnlyLatestReplicaSetActive -DeploymentName "rules-enrichment-daemon-dfn-d-$Environment"
 

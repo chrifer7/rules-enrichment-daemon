@@ -51,7 +51,15 @@ spec:
         - name: log-shipper
           image: rules-enrichment-daemon-test-is:latest
           imagePullPolicy: IfNotPresent
-          command: ["python", "-m", "app.interfaces.cli.main", "forward-log-file"]
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              if [ "${LOG_SHIPPER_ENABLED:-true}" = "true" ]; then
+                python -m app.interfaces.cli.main forward-log-file
+              else
+                echo "rules-enrichment-daemon log shipper disabled; keeping sidecar idle"
+                sleep infinity
+              fi
           envFrom:
             - configMapRef:
                 name: rules-enrichment-daemon-test-config

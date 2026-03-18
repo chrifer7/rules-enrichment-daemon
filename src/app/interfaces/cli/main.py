@@ -64,6 +64,12 @@ def publish_outbox() -> None:
 def forward_log_file() -> None:
     settings = get_settings()
     logging.basicConfig(level=getattr(logging, settings.log_level.upper(), logging.INFO))
+    if not settings.log_shipper_enabled:
+        logger.info(
+            "log_shipper_disabled",
+            extra={"event.action": "log_shipper_start", "event.category": "process", "event.outcome": "success"},
+        )
+        return
     ElasticsearchLogShipper(settings).run_forever()
 
 

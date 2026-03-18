@@ -14,6 +14,7 @@ data:
   LOG_TO_STDOUT: "true"
   LOG_TO_FILE: "true"
   LOG_FILE_PATH: /tmp/rules-enrichment-daemon/daemon.log
+  LOG_SHIPPER_ENABLED: "true"
   LOG_SHIPPER_ELASTICSEARCH_URL: http://elasticsearch-test-dfn.dsc-dhl-fulfillment-network-mida.svc:9200
   LOG_SHIPPER_INDEX_PREFIX: rules-enrichment-daemon-logs
   LOG_SHIPPER_FLUSH_INTERVAL_SECONDS: "5"
